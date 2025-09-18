@@ -1,0 +1,25 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "cid_retranslator",
+  "outputfilename": "cid_retranslator",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "a.pidlypnyi",
+    "email": "dreikk91@gmail.com"
+  },
+  "info": {
+    "companyName": "Your Company",
+    "productName": "CID Retranslator",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright © 2025, LOT POLICE",
+    "comments": "CID Retranslator Application"
+  },
+  "nsisType": "multiple",
+  "systray": {
+    "enabled": true,
+    "iconPath": "build/appicon.png"
+  }
+}
