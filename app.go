@@ -12,10 +12,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
-	"strings"
 
 	"github.com/getlantern/systray"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -24,19 +24,19 @@ import (
 
 // App struct
 type App struct {
-	ctx         context.Context // Signal context for shutdown
-	wailsCtx    context.Context // Wails context for runtime calls
-	cfg         *config.Config
-	appQueue    *queue.Queue
-	tcpServer   *server.Server
-	tcpClient   *client.Client
-	logger      *slog.Logger
-	fileLogger  *lumberjack.Logger // Store fileLogger for closing
-	cancelfunc  context.CancelFunc
-	wg          sync.WaitGroup
-	logBuffer   []string
-	logMu       sync.RWMutex
-	startTime   time.Time
+	ctx        context.Context // Signal context for shutdown
+	wailsCtx   context.Context // Wails context for runtime calls
+	cfg        *config.Config
+	appQueue   *queue.Queue
+	tcpServer  *server.Server
+	tcpClient  *client.Client
+	logger     *slog.Logger
+	fileLogger *lumberjack.Logger // Store fileLogger for closing
+	cancelfunc context.CancelFunc
+	wg         sync.WaitGroup
+	logBuffer  []string
+	logMu      sync.RWMutex
+	startTime  time.Time
 }
 
 // NewApp creates a new App application struct
@@ -172,6 +172,11 @@ func (a *App) Startup(ctx context.Context) {
 		defer a.wg.Done()
 		a.tcpClient.Run(a.ctx)
 	}()
+
+	// go a.StartStatsEmitter(a.wailsCtx)
+	// go a.StartLogsEmitter(a.wailsCtx)
+	go a.StartEmitter(a.wailsCtx)
+
 }
 
 // onReady sets up the system tray menu
@@ -271,15 +276,83 @@ func (a *App) GetStats() Stats {
 	}
 }
 
+func (a *App) DomReady(ctx context.Context) {
+	go a.StartStatsEmitter(ctx) // тепер підписники точно є
+}
+
+func (a *App) StartStatsEmitter(ctx context.Context) {
+	ticker := time.NewTicker(100 * time.Millisecond) // 1 раз у сек
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			st := a.GetStats()
+			runtime.EventsEmit(ctx, "stats_update", st)
+		}
+	}
+}
+
 func (a *App) GetLogs() []string {
 	a.logMu.RLock()
 	defer a.logMu.RUnlock()
 	return append([]string{}, a.logBuffer...)
 }
 
+func (a *App) StartLogsEmitter(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Millisecond) // 1 раз у сек
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Отримуємо нові події
+			newEvents := a.GetGlobalEvents()
+			runtime.EventsEmit(ctx, "logs_update", newEvents)
+			// for _, ev := range newEvents {
+			// 	runtime.EventsEmit(ctx, "logs_update", ev) // кожна окремо
+			// }
+		}
+	}
+}
+
 func (a *App) GetDevices() []server.Device {
 	devices := a.tcpServer.GetDevices()
 	return devices
+}
+
+func (a *App) StartEmitter(ctx context.Context) {
+	ticker := time.NewTicker(300 * time.Millisecond) // 1 раз у сек
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Отримуємо нові події
+			newDevices := a.GetDevices()
+			runtime.EventsEmit(ctx, "devices_update", newDevices)
+
+			newEvents := a.GetGlobalEvents()
+			runtime.EventsEmit(ctx, "logs_update", newEvents)
+
+			st := a.GetStats()
+			runtime.EventsEmit(ctx, "stats_update", st)
+		}
+	}
+}
+
+func (a *App) GetGlobalEvents() []server.GlobalEvent {
+	return a.tcpServer.GetGlobalEvents()
+}
+
+func (a *App) GetDeviceEvents(id int) []server.Event {
+	return a.tcpServer.GetDeviceEvents(id)
 }
 
 func (a *App) Greet(name string) string {

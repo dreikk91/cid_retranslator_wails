@@ -10,45 +10,64 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
 )
 
 type Server struct {
-	host      string
-	port      string
-	queue     *queue.Queue
-	rules     *config.CIDRules
-	cancel    context.CancelFunc
-	stopOnce  sync.Once
-	listener  net.Listener
-	isRunning bool
-	devices   []Device
-	deviceMu  sync.RWMutex
+	host               string
+	port               string
+	queue              *queue.Queue
+	rules              *config.CIDRules
+	cancel             context.CancelFunc
+	stopOnce           sync.Once
+	listener           net.Listener
+	isRunning          bool
+	devices            []Device
+	deviceMu           sync.RWMutex
+	globalEvents       []GlobalEvent
+	globalMu           sync.RWMutex
 }
 
-// Device структура для збереження подій пристроїв
+// Event represents an event for a device
+type Event struct {
+	Time string `json:"time"`
+	Data string `json:"data"`
+}
+
+// Device represents a device with its events
 type Device struct {
-	ID           int `json:"id"`
-	LastEventTime string `json:"lastEventTime"`
-	LastEvent     string `json:"lastEvent"`
+	ID           int      `json:"id"`
+	LastEventTime string  `json:"lastEventTime"`
+	LastEvent    string   `json:"lastEvent"`
+	Events       []Event  `json:"events"`
+}
+
+// GlobalEvent represents a global event across all devices
+type GlobalEvent struct {
+	Time     string `json:"time"`
+	DeviceID int    `json:"deviceID"`
+	Data     string `json:"data"`
 }
 
 // connection represents a client connection to the server.
 type connection struct {
-	conn  net.Conn
-	queue *queue.Queue
-	rules *config.CIDRules
-	server *Server // Додаємо посилання на сервер для доступу до devices
+	conn   net.Conn
+	queue  *queue.Queue
+	rules  *config.CIDRules
+	server *Server // Reference to server for access to devices
 }
 
 func New(cfg *config.ServerConfig, q *queue.Queue, rules *config.CIDRules) *Server {
 	return &Server{
-		host:  cfg.Host,
-		port:  cfg.Port,
-		queue: q,
-		rules: rules,
+		host:        cfg.Host,
+		port:        cfg.Port,
+		queue:       q,
+		rules:       rules,
+		devices:     make([]Device, 0),
+		globalEvents: make([]GlobalEvent, 0),
 	}
 }
 
@@ -104,29 +123,84 @@ func (server *Server) Stop() {
 	})
 }
 
-// UpdateDevice оновлює або додає подію для пристрою
+// UpdateDevice updates or adds an event for the device
 func (server *Server) UpdateDevice(id int, event string) {
+	now := time.Now()
+	nowStr := now.Format("2006-01-02 15:04:05")
+
 	server.deviceMu.Lock()
 	defer server.deviceMu.Unlock()
-	for i, d := range server.devices {
-		if d.ID == id {
+
+	found := false
+	for i := range server.devices {
+		if server.devices[i].ID == id {
+			server.devices[i].LastEventTime = nowStr
 			server.devices[i].LastEvent = event
-			server.devices[i].LastEventTime = time.Now().Format("2006-01-02 15:04:05")
-			return
+			server.devices[i].Events = append(server.devices[i].Events, Event{Time: nowStr, Data: event})
+			if len(server.devices[i].Events) > 100 {
+				server.devices[i].Events = server.devices[i].Events[len(server.devices[i].Events)-100:]
+			}
+			found = true
+			break
 		}
 	}
-	server.devices = append(server.devices, Device{
-		ID:           id,
-		LastEvent:    event,
-		LastEventTime: time.Now().Format("2006-01-02 15:04:05"),
-	})
+
+	if !found {
+		newDevice := Device{
+			ID:           id,
+			LastEventTime: nowStr,
+			LastEvent:    event,
+			Events:       []Event{{Time: nowStr, Data: event}},
+		}
+		server.devices = append(server.devices, newDevice)
+	}
+
+	// Add to global events
+	server.globalMu.Lock()
+	server.globalEvents = append(server.globalEvents, GlobalEvent{Time: nowStr, DeviceID: id, Data: event})
+	if len(server.globalEvents) > 500 {
+		server.globalEvents = server.globalEvents[len(server.globalEvents)-500:]
+	}
+	server.globalMu.Unlock()
 }
 
-// GetDevices повертає список пристроїв
+// GetDevices returns a list of devices (without full events history for efficiency)
 func (server *Server) GetDevices() []Device {
 	server.deviceMu.RLock()
 	defer server.deviceMu.RUnlock()
-	return append([]Device{}, server.devices...)
+
+	devs := make([]Device, len(server.devices))
+	for i, d := range server.devices {
+		devs[i] = Device{
+			ID:           d.ID,
+			LastEventTime: d.LastEventTime,
+			LastEvent:    d.LastEvent,
+			// Events omitted for summary
+		}
+	}
+	return devs
+}
+
+// GetGlobalEvents returns the global list of events
+func (server *Server) GetGlobalEvents() []GlobalEvent {
+	server.globalMu.RLock()
+	defer server.globalMu.RUnlock()
+	events := append([]GlobalEvent{}, server.globalEvents...)
+	slices.Reverse(events)
+	return events
+}
+
+// GetDeviceEvents returns the events for a specific device
+func (server *Server) GetDeviceEvents(id int) []Event {
+	server.deviceMu.RLock()
+	defer server.deviceMu.RUnlock()
+
+	for _, d := range server.devices {
+		if d.ID == id {
+			return append([]Event{}, d.Events...)
+		}
+	}
+	return []Event{}
 }
 
 func (c *connection) handleRequest(ctx context.Context) {
@@ -189,8 +263,8 @@ func (c *connection) handleRequest(ctx context.Context) {
 		select {
 		case c.queue.DataChannel <- sharedData:
 			log.Println(c.queue.DataChannel)
-			// Додаємо подію для пристрою (наприклад, витягуємо ID із повідомлення)
-			deviceID := extractDeviceID(newMessage) // Реалізуйте цю функцію в cidParser
+			// Add event for device
+			deviceID := extractDeviceID(newMessage)
 			c.server.UpdateDevice(deviceID, string(newMessage))
 
 			select {
@@ -225,7 +299,6 @@ func (c *connection) handleRequest(ctx context.Context) {
 		}
 	}
 }
-
 
 func extractDeviceID(message []byte) int {
 	accountNumber, err := strconv.Atoi(string(message[7:11]))

@@ -6,12 +6,13 @@
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
+  "wailsjsdir": "./frontend/src/lib",
   "author": {
     "name": "a.pidlypnyi",
     "email": "dreikk91@gmail.com"
   },
   "info": {
-    "companyName": "Your Company",
+    "companyName": "LOT POLICE",
     "productName": "CID Retranslator",
     "productVersion": "1.0.0",
     "copyright": "Copyright © 2025, LOT POLICE",
@@ -20,6 +21,6 @@
   "nsisType": "multiple",
   "systray": {
     "enabled": true,
-    "iconPath": "build/appicon.png"
+    "iconPath": "build/icon.ico"
   }
 }
